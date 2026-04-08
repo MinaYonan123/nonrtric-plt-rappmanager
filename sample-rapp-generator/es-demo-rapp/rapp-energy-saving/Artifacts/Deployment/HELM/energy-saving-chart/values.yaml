@@ -22,10 +22,10 @@
 replicaCount: 1
 
 image:
-  repository: "nexus3.onap.org:10001/estdemoimages/es-rapp"
+  repository: "docker.io/ayakamal2000/es-rapp"
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.2.16"
+  tag: "vi5"
 
 imagePullSecrets: []
 nameOverride: "energy-saving-rapp"
@@ -97,12 +97,26 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Enable hostNetwork to allow pod to access O1 server on localhost:8831
+# When enabled, pod shares host network namespace (can access 127.0.0.1)
+hostNetwork: true
+
 environment:
   appId: "energy-saving"
   smeDiscoveryEndpoint: "http://sme-discovery.default.svc.cluster.local:8080/service-apis/v1/allServiceAPIs"
+  csvLoadOnStartup: "true"
+  csvTargetStartDate: ""  # Empty string = use original CSV timestamps (May 18-26, 2025)
+
+# O1 NETCONF server configuration (accessible via hostNetwork)
+o1Server:
+  host: "172.19.1.86"
+  port: "8831"
+  user: "admin"
+  password: "admin"
 
 influxdb:
-  token: "hIVMgY7vn3M772PSk3yrI2IjeWzybPw0"
+  token: "dwolT1HSWXdKXQoaWJNqLXSieBfMqnHK"
   # This token secret is part of the smo install. The rapp will expect that this secret is created in the same namespace as the rapp.
   tokenSecretName: influxdb-api-token
   user: "admin"
@@ -111,19 +125,24 @@ influxdb:
   org: "est"
   apiName: "influxdb2-http"
   resourceName: "root"
-  timeRange: "-5m"
+  timeRange: "2025-05-01T00:00:00Z"
   measurements:
     - "ManagedElement=o-du-pynts-1122,ManagedElement=o-du-pynts-1122,GNBDUFunction=1,NRCellDU=1"
     - "ManagedElement=o-du-pynts-1123,ManagedElement=o-du-pynts-1123,GNBDUFunction=1,NRCellDU=1"
     - "o-ran-pm"
+    - "branges-pm-data"  # Custom measurement for CSV imported data
 
 
 ncmp:
-  apiName: "cps-core-http"
+  #apiName: "cps-core-http"
+  apiName: "sdnc-oam-http"
   resourceName: "root"
   resourceId: "/_3gpp-common-managed-element:ManagedElement=ManagedElement-002/_3gpp-nr-nrm-gnbdufunction:GNBDUFunction=GNBDUFunction-001/_3gpp-nr-nrm-nrcelldu:NRCellDU=NRCellDU-001/attributes"
   managedElementId: "ManagedElement-002"
   gnbduFunctionId: "GNBDUFunction-001"
+  # SDNC/NCMP authentication credentials
+  username: "admin"
+  password: "Kp8bJ4SXszM0WXlhak3eHlcse2gAw84vaoGGmJvUy2U"
 
 kserve:
   apiName: "es-predictor-http"
@@ -136,5 +155,4 @@ teiv:
 
 appStartup:
   command: ["/bin/sh", "-c"]
-  args: [ "python main.py --generate_db_data=False --use_sme_db=True --random_predictions=False" ]
-
+  args: [ "python3.10 main.py --generate_db_data=False --use_sme_db=True --random_predictions=False --load_csv_data=True" ]

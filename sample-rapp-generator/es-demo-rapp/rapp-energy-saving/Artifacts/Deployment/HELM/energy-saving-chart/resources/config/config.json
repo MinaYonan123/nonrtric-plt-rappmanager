@@ -9,6 +9,8 @@
     "resource_id": "{{ .Values.ncmp.resourceId}}",
     "ncmp_managed_element_id": "{{ .Values.ncmp.managedElementId }}",
     "ncmp_gnbdufunction_id": "{{ .Values.ncmp.gnbduFunctionId }}",
+    "ncmp_username": "{{ .Values.ncmp.username }}",
+    "ncmp_password": "{{ .Values.ncmp.password }}",
     "influxdb_invoker_id": "{{ .Values.environment.appId }}",
     "influxdb_api_name": "{{ .Values.influxdb.apiName }}",
     "influxdb_resource_name": "{{ .Values.influxdb.resourceName }}",
@@ -31,7 +33,7 @@
     "example_data_file": "example_data.json",
     "database": "{{ .Values.influxdb.bucket }}",
     "time_range": "{{ .Values.influxdb.timeRange }}",
-    "measurements": {{ .Values.influxdb.measurements | toJson }},
+    "measurements": "{{ .Values.influxdb.measurements | toJson }}",
     "ssl": false,
     "address": "http://localhost:8086"
   }

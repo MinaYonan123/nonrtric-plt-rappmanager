@@ -44,6 +44,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "energy-saving.serviceAccountName" . }}
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -63,6 +67,16 @@ spec:
               value: {{ .Values.environment.appId | quote }}
             - name: SME_DISCOVERY_ENDPOINT
               value: {{ .Values.environment.smeDiscoveryEndpoint | quote }}
+            - name: CSV_LOAD_ON_STARTUP
+              value: {{ .Values.environment.csvLoadOnStartup | default "false" | quote }}
+            - name: CSV_TARGET_START_DATE
+              value: {{ .Values.environment.csvTargetStartDate | default "" | quote }}
+            - name: O1_SERVER_HOST
+              value: {{ .Values.o1Server.host | quote }}
+            - name: O1_SERVER_PORT
+              value: {{ .Values.o1Server.port | quote }}
+            - name: O1_SERVER_USER
+              value: {{ .Values.o1Server.user | quote }}
             - name: INFLUX_TOKEN
               valueFrom:
                 secretKeyRef:
