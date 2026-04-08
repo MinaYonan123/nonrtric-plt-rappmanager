@@ -123,10 +123,11 @@ class DATABASE(object):
         measurement_filters = [f'r["_measurement"] == "{m}"' for m in measurements]
         query += f' |> filter(fn: (r) => {" or ".join(measurement_filters)})'
 
-        query += ' |> filter(fn: (r) => r["_field"] == "CellID" or r["_field"] == "DRB.UEThpUl" or r["_field"] == "RRU.PrbUsedUl" or r["_field"] == "PEE.AvgPower") '
+        # Filter for both synthetic data fields AND CSV data fields
+        query += ' |> filter(fn: (r) => r["_field"] == "CellID" or r["_field"] == "DRB.UEThpUl" or r["_field"] == "RRU.PrbUsedUl" or r["_field"] == "PEE.AvgPower" or r["_field"] == "PRB_DL" or r["_field"] == "USERTHROUGHPUTDL_MBPS" or r["_field"] == "ENDC_AVG_RRC_CONNECTED_USERS") '
         # Keep _measurement in the rowKey to preserve it
         query += ' |> pivot(rowKey: ["_time", "_measurement"], columnKey: ["_field"], valueColumn: "_value") '
-
+       # logger.info(f"InfluxDB Query: {query}")
         result = self.query(query)
         #logger.debug(f"Data grouped by measurement:\n{result.groupby('_measurement').size()}")
         self.data = result
@@ -145,11 +146,19 @@ class DATABASE(object):
                 time.sleep(60)
 
     def mapping(self, data):
-        data[['S', 'B', 'C']] = data['CellID'].str.extract(r'S(\d+)-[BN](\d+)-C(\d+)')
-        data[['S', 'B', 'C']] = data[['S', 'B', 'C']].astype(int)
-        data = data.sort_values(by=['B', 'S', 'C'])
-        data['cellidnumber'] = data.groupby(['B', 'S', 'C']).ngroup().add(1)
-        data = data.drop(['S', 'B', 'C'], axis=1)
+        # Handle both BRANGES cell format and S-B-C format
+        if data['CellID'].str.contains('BRANGES|[A-Z_]+', regex=True, na=False).any():
+            # Custom mapping for cell names like BRANGES_T1
+            logger.debug("Detected custom cell naming format (e.g., BRANGES_T1)")
+            data['cellidnumber'] = pd.factorize(data['CellID'])[0] + 1
+        else:
+            # Original regex for S-B-C format (e.g., S2-B16-C1)
+            logger.debug("Detected S-B-C cell naming format")
+            data[['S', 'B', 'C']] = data['CellID'].str.extract(r'S(\d+)-[BN](\d+)-C(\d+)')
+            data[['S', 'B', 'C']] = data[['S', 'B', 'C']].astype(int)
+            data = data.sort_values(by=['B', 'S', 'C'])
+            data['cellidnumber'] = data.groupby(['B', 'S', 'C']).ngroup().add(1)
+            data = data.drop(['S', 'B', 'C'], axis=1)
         return data
 
     def generate_synthetic_data(self):
@@ -195,6 +204,116 @@ class DATABASE(object):
         write_api.close()
         logger.info("Synthetic data successfully written to InfluxDB.")
 
+    def load_csv_to_influxdb(self, csv_file_path, measurement_name="o-ran-pm", cell_id_column="CELLULE", timestamp_column="MINIMALE(PSDATE)"):
+        """
+        Load data from CSV file and write to InfluxDB - GENERIC VERSION
+        Automatically detects and uses all numeric columns as fields with their original names.
+        
+        Args:
+            csv_file_path: Path to the CSV file
+            measurement_name: Name of the measurement in InfluxDB
+            cell_id_column: Column name to use as CellID tag (default: CELLULE)
+            timestamp_column: Column name containing timestamps (default: MINIMALE(PSDATE))
+        """
+        import csv
+        from datetime import datetime
+        
+        logger.info(f"Loading CSV data from: {csv_file_path}")
+        logger.info(f"Cell ID column: {cell_id_column}, Timestamp column: {timestamp_column}")
+        
+        write_api = self.client.write_api(write_options=SYNCHRONOUS)
+        records_written = 0
+        points = []
+        
+        # Columns to exclude from fields (metadata columns)
+        exclude_columns = {cell_id_column, timestamp_column, 'CODE_ELT_CELLULE'}
+        
+        try:
+            with open(csv_file_path, 'r', encoding='utf-8') as csvfile:
+                reader = csv.DictReader(csvfile, delimiter=';')
+                headers = reader.fieldnames
+                
+                # Auto-detect numeric columns
+                logger.info(f"CSV columns found: {len(headers)}")
+                logger.info(f"Columns: {headers}")
+                
+                for row in reader:
+                    try:
+                        # Parse timestamp from CSV
+                        timestamp_str = row.get(timestamp_column, '').strip()
+                        if timestamp_str:
+                            # Parse DD/MM/YYYY HH:MM:SS format
+                            timestamp = datetime.strptime(timestamp_str, '%d/%m/%Y %H:%M:%S')
+                        else:
+                            # Use current time if no timestamp
+                            timestamp = datetime.now()
+                        
+                        # Create a single point for this row
+                        point = influxdb_client.Point(measurement_name).time(timestamp)
+                        
+                        # Add CellID as a tag
+                        cell_id = row.get(cell_id_column, '').strip()
+                        if cell_id:
+                            point = point.tag("CellID", cell_id)
+                        
+                        # Add all other columns as fields (auto-detect numeric vs string)
+                        fields_added = 0
+                        for column_name in headers:
+                            if column_name in exclude_columns:
+                                continue
+                            
+                            value = row.get(column_name, '')
+                            if value is None or (isinstance(value, str) and not value.strip()):
+                                continue
+                            
+                            value = value.strip() if isinstance(value, str) else str(value)
+                            
+                            try:
+                                # Try to parse as numeric (handle French decimal format)
+                                value_clean = value.replace(',', '.')
+                                numeric_value = float(value_clean)
+                                point = point.field(column_name, numeric_value)
+                                fields_added += 1
+                            except ValueError:
+                                # If not numeric, store as string
+                                point = point.field(column_name, value)
+                                fields_added += 1
+                                fields_added += 1
+                        
+                        # Only add point if it has at least one field
+                        if fields_added > 0:
+                            points.append(point)
+                            records_written += 1
+                        
+                        # Write in batches of 500
+                        if len(points) >= 500:
+                            write_api.write(bucket=self.bucket, org=self.org, record=points)
+                            logger.info(f"Wrote batch of {len(points)} points (total: {records_written})...")
+                            points = []
+                    
+                    except Exception as e:
+                        logger.warning(f"Error processing row: {e}")
+                        continue
+                
+                # Write remaining points
+                if points:
+                    write_api.write(bucket=self.bucket, org=self.org, record=points)
+                    logger.info(f"Wrote final batch of {len(points)} points...")
+            
+            write_api.close()
+            logger.info(f"Successfully loaded {records_written} data points from CSV to InfluxDB")
+            logger.info(f"Measurement: {measurement_name}, Bucket: {self.bucket}")
+            
+        except FileNotFoundError:
+            logger.error(f"CSV file not found: {csv_file_path}")
+        except Exception as e:
+            logger.error(f"Error loading CSV to InfluxDB: {e}", exc_info=True)
+            
+        except FileNotFoundError:
+            logger.error(f"CSV file not found: {csv_file_path}")
+        except Exception as e:
+            logger.error(f"Error loading CSV to InfluxDB: {e}")
+
     def config(self):
 
         with open('config.json', 'r') as f:
@@ -224,5 +343,7 @@ class DATABASE(object):
         self.dbname = influx_config.get("database")
         self.user = influx_config.get("user")
         self.password = influx_config.get("password")
-        self.time_range = influx_config.get("time_range")
-        self.measurements = influx_config.get("measurements")
+        # Override time_range to query May 2025 CSV data
+        self.time_range = "2025-05-01T00:00:00Z"
+        # Override measurements to only query CSV data
+        self.measurements = ["branges-pm-data"]

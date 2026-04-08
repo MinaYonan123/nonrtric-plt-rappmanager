@@ -25,14 +25,41 @@ from data import DATABASE
 from assist import ASSIST
 from ncmp_client import NCMP_CLIENT
 from teiv_client import TEIV_CLIENT
+from csv_loader import load_csv_data_recent
+from energy_saving_action import EnergySavingAction
 import json
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Version tracking for deployment verification
+RAPP_VERSION = "v1.0.33-o1-server-fix"
+BUILD_INFO = "O1 server connection fixed: localhost:8831 with environment variable support (hostNetwork enabled)"
+
+# CSV data configuration - default to same directory as main.py
+CSV_FILE_PATH = os.environ.get('CSV_FILE_PATH', os.path.join(os.path.dirname(__file__), 'SU_MIMO_15m 1.csv'))
+CSV_LOAD_ON_STARTUP = os.environ.get('CSV_LOAD_ON_STARTUP', 'false').lower() == 'true'
+# Set to None or empty string to use original CSV timestamps (May 2025)
+# Set to YYYY-MM-DD to shift timestamps to that date
+CSV_TARGET_START_DATE = os.environ.get('CSV_TARGET_START_DATE', '') or None
+
+# O1 NETCONF server configuration
+O1_SERVER_HOST = os.environ.get('O1_SERVER_HOST', '172.19.1.86')  # Default to Kubernetes node IP
+O1_SERVER_PORT = int(os.environ.get('O1_SERVER_PORT', '8831'))
+O1_SERVER_USER = os.environ.get('O1_SERVER_USER', 'admin')
+O1_SERVER_PASS = os.environ.get('O1_SERVER_PASS', 'netconf')
+
 
 class ESrapp():
-    def __init__(self, generate_db_data=True, use_sme_db=False, random_predictions=False):
+    def __init__(self, generate_db_data=True, use_sme_db=False, random_predictions=False, load_csv_data=True):
+
+        logger.info("="*70)
+        logger.info(" ENERGY SAVING rAPP INITIALIZING ")
+        logger.info(f"Version: {RAPP_VERSION}")
+        logger.info(f"Build Info: {BUILD_INFO}")
+        logger.info(f"Configuration: generate_db_data={generate_db_data}, use_sme_db={use_sme_db}, random_predictions={random_predictions}, load_csv_data={load_csv_data}")
+        logger.info("="*70)
 
         # Initialize the local storage of cell status
         self.cell_power_status = {}
@@ -50,7 +77,16 @@ class ESrapp():
 
         self.db.connect()
 
-        if generate_db_data:
+        if load_csv_data:
+            # Load CSV data with original or shifted timestamps using csv_loader module
+            load_csv_data_recent(
+                db_client=self.db.client,
+                bucket=self.db.bucket,
+                org=self.db.org,
+                csv_file_path=CSV_FILE_PATH,
+                target_start_date=CSV_TARGET_START_DATE
+            )
+        elif generate_db_data:
             # Use local InfluxDB and generate synthetic data - only for local testing
             self.db.generate_synthetic_data()
 
@@ -59,6 +95,19 @@ class ESrapp():
         # Initialize the NCMP client - allows us to query the cells from the RAN and power them on/off
         self.ncmp_client = NCMP_CLIENT()
         self.index = 1
+
+        # Initialize the Energy Saving Action handler
+        self.energy_action = EnergySavingAction(
+            self.ncmp_client,
+            netconf_host=O1_SERVER_HOST,
+            netconf_port=O1_SERVER_PORT,
+            netconf_user=O1_SERVER_USER,
+            netconf_pass=O1_SERVER_PASS
+        )
+        logger.info(f" Energy Saving Action handler initialized (O1 Server: {O1_SERVER_HOST}:{O1_SERVER_PORT})")
+        
+        # Initialize O1 server with topology configuration
+        self.energy_action.initialize_o1_server()
 
         # Get the ODU function ID from the database
         self.teiv_client = TEIV_CLIENT()
@@ -77,14 +126,26 @@ class ESrapp():
             logger.warning("ES rApp is already running")
             return
 
+        logger.info(" TRACE: Starting main entry loop - STATIC PREDICTION MODE!")
+        logger.info(f" TRACE: Running version {RAPP_VERSION}")
+        logger.info(" Processing all 48 hours with hourly decisions (running every 10 seconds for testing)")
+        
         self._running = True
+        # Run every 10 seconds to process each hour (for testing/demo purposes)
+        # In production, you might want 3600 seconds (1 hour) per iteration
         self.job = schedule.every(10).seconds.do(self.safe_inference)
         last_run = 0
 
         try:
             while self._running:
+                # Check if we've processed all predictions
+                if self.energy_action.current_hour >= 48:
+                    logger.info(" All predictions have been processed. Stopping application.")
+                    self._running = False
+                    break
+                
                 now = time.time()
-                if now - last_run >= 10:  # 10 second interval
+                if now - last_run >= 10:  # 10 second interval to process each hour
                     self.safe_inference()
                     last_run = now
                 time.sleep(1)
@@ -116,19 +177,85 @@ class ESrapp():
             self.inference_lock.release()
     # Send data to ML rApp
     def inference(self):
+        """
+        Run inference using STATIC predictions (no ML model calls).
+        Processes one hour at a time from the 192-value prediction vector.
+        
+        Each call processes the next hour (4 predictions at 15-min intervals).
+        Will process all 48 hours (0-47) and then stop.
+        """
+        # Check if we've processed all hours
+        if self.energy_action.current_hour >= 48:
+            return
+        
+        # Process the next hour's predictions for BRANGES_T1 sector using cell ID 16
+        action_taken = self.energy_action.make_hourly_decision(cell_id=16, cell_name="BRANGES_T1")
+        
+        # OLD CODE BELOW - Using real-time data from InfluxDB and ML predictions
+        # This is commented out as we now use static predictions
+        """
+        #logger.info(f" TRACE: Running inference cycle (version: {RAPP_VERSION})")
+        
         data = self.db.read_data()
 
         if data.empty:
             logger.info("No data to process... skipping this iteration of inference.")
             return
 
+       # logger.info(f" TRACE: Processing {len(data)} data points")
+        
         data_mapping = self.mapping(data)
         # Group the data by CellID and _measurement. This means that even if cell ids are the same, but the measurement is different, they will be processed separately.
         groups = data_mapping.groupby(["CellID", "_measurement"])
-        for group_name, group_data in groups:
-            json_data = self.generate_json_data(group_data)
-            logger.info(f"Send data to ML rApp {group_name}: {json_data}")
-            status_code, response_text = self.assist.send_request_to_server(json_data, randomize=self.random_predictions)
+        
+        # Define the order of cells to process
+        cell_order = ['BRANGES_T1', 'BRANGES_T2', 'BRANGES_T3']
+        
+        # Process cells in order
+        for cell_name in cell_order:
+            # Find the group for this cell
+            group_found = False
+            for group_name, group_data in groups:
+                cell_id_name = group_data['CellID'].iloc[0]
+                
+                if cell_id_name != cell_name:
+                    continue
+                    
+                group_found = True
+                logger.info(f" Processing cell: {cell_id_name}")
+                
+                # Get the cell ID number (1 for T1, 2 for T2, 3 for T3)
+                cell_mapping = {'BRANGES_T1': 1, 'BRANGES_T2': 2, 'BRANGES_T3': 3}
+                cell_id_number = cell_mapping.get(cell_id_name, 0)
+                
+                # Take only first 1 data point for this cell (ONE value)
+                limited_data = group_data.head(1)
+                
+                json_data = self.generate_json_data(limited_data)
+                logger.info(f" Send 1 value to ML rApp for {group_name}: {json_data}")
+                status_code, response_text = self.assist.send_request_to_server(json_data, randomize=self.random_predictions)
+                logger.info(f" Received prediction for {cell_name}: {response_text}")
+                
+                # Parse the prediction value
+                try:
+                    import json as json_lib
+                    prediction_dict = json_lib.loads(response_text)
+                    prediction_value = prediction_dict['predictions'][0][0]
+                    
+                    # Use the energy_action handler to process the prediction
+                    self.energy_action.process_prediction(cell_id_name, cell_id_number, prediction_value)
+                    
+                except Exception as e:
+                    logger.error(f" Error parsing prediction: {e}")
+                
+                break  # Move to next cell in order
+            
+            if not group_found:
+                logger.warning(f"  No data found for cell {cell_name}")
+                continue
+            
+            # Continue with action logic for the current cell
+            group_data = limited_data
             if not self.check_and_perform_action(response_text):
                 cell_id_name = group_data['CellID'].iloc[0]
                 # Check if the cell is in TEIV
@@ -169,6 +296,7 @@ class ESrapp():
                 else:
                     if self.ncmp_client.power_off_cell(cell_with_node):
                         self.cell_power_status[cell_with_node] = "off"
+        """
 
     def extract_managed_element(self, measurement):
         if '=' not in measurement or ',' not in measurement:
@@ -182,21 +310,51 @@ class ESrapp():
         return measurement
     # Generate the input data for ML rApp
     def generate_json_data(self, data):
-        # rrc_conn_mean_values = data["RRC.ConnMean"].tolist()
-        drb_ue_thp_ul_values = data["DRB.UEThpUl"].tolist()
-        rru_prb_used_ul_values = data["RRU.PrbUsedUl"].tolist()
-        pee_avg_power_values = data["PEE.AvgPower"].tolist()
+        import numpy as np
+        
+        # Check if this is CSV data (BRANGES format) or synthetic data
+        if "PRB_DL" in data.columns and "USERTHROUGHPUTDL_MBPS" in data.columns and "ENDC_AVG_RRC_CONNECTED_USERS" in data.columns:
+            # CSV data format - use PRB_DL, USERTHROUGHPUTDL_MBPS, ENDC_AVG_RRC_CONNECTED_USERS
+            logger.debug("Detected CSV data format - using PRB_DL, USERTHROUGHPUTDL_MBPS, ENDC_AVG_RRC_CONNECTED_USERS")
+            
+            # Replace NaN values with 0.0 before converting to list
+            data_clean = data[["PRB_DL", "USERTHROUGHPUTDL_MBPS", "ENDC_AVG_RRC_CONNECTED_USERS"]].fillna(0.0)
+            
+            prb_dl_values = data_clean["PRB_DL"].tolist()
+            throughput_dl_values = data_clean["USERTHROUGHPUTDL_MBPS"].tolist()
+            rrc_connected_values = data_clean["ENDC_AVG_RRC_CONNECTED_USERS"].tolist()
 
-        instances = [
-            [
-                [drb, rru, pee]
-                for drb, rru, pee in zip(
-                drb_ue_thp_ul_values,
-                rru_prb_used_ul_values,
-                pee_avg_power_values
-            )
+            instances = [
+                [
+                    [prb, throughput, rrc]
+                    for prb, throughput, rrc in zip(
+                        prb_dl_values,
+                        throughput_dl_values,
+                        rrc_connected_values
+                    )
+                ]
             ]
-        ]
+        else:
+            # Synthetic data format - use original measurements
+            logger.debug("Detected synthetic data format - using DRB.UEThpUl, RRU.PrbUsedUl, PEE.AvgPower")
+            
+            # Replace NaN values with 0.0 before converting to list
+            data_clean = data[["DRB.UEThpUl", "RRU.PrbUsedUl", "PEE.AvgPower"]].fillna(0.0)
+            
+            drb_ue_thp_ul_values = data_clean["DRB.UEThpUl"].tolist()
+            rru_prb_used_ul_values = data_clean["RRU.PrbUsedUl"].tolist()
+            pee_avg_power_values = data_clean["PEE.AvgPower"].tolist()
+
+            instances = [
+                [
+                    [drb, rru, pee]
+                    for drb, rru, pee in zip(
+                        drb_ue_thp_ul_values,
+                        rru_prb_used_ul_values,
+                        pee_avg_power_values
+                    )
+                ]
+            ]
 
         json_data = {"signature_name": "serving_default", "instances": instances}
         logger.debug(f'Generated JSON data: {json_data}')
@@ -204,12 +362,28 @@ class ESrapp():
     # Mapping CellID and Cell name
     def mapping(self, data):
         data = pd.DataFrame(data)
-        # TODO: This regex is not likely to match all cell IDs. Will need to be improved.
-        data[['S', 'B', 'C']] = data['CellID'].str.extract(r'S(\d+)-[BN](\d+)-C(\d+)')
-        data[['S', 'B', 'C']] = data[['S', 'B', 'C']].astype(int)
-        data = data.sort_values(by=['B', 'S', 'C'])
-        data['cellidnumber'] = data.groupby(['B', 'S', 'C']).ngroup().add(1)
-        data = data.drop(['S', 'B', 'C'], axis=1)
+        # Handle both BRANGES cell format and S-B-C format
+        if data['CellID'].str.contains('BRANGES|[A-Z_]+', regex=True, na=False).any():
+            # Custom mapping for BRANGES cell names: T1=1, T2=2, T3=3
+            logger.debug("Detected custom cell naming format (e.g., BRANGES_T1)")
+            cell_mapping = {
+                'BRANGES_T1': 1,
+                'BRANGES_T2': 2,
+                'BRANGES_T3': 3
+            }
+            data['cellidnumber'] = data['CellID'].map(cell_mapping)
+            # For any unmapped cells, use factorize starting from 4
+            unmapped = data['cellidnumber'].isna()
+            if unmapped.any():
+                data.loc[unmapped, 'cellidnumber'] = pd.factorize(data.loc[unmapped, 'CellID'])[0] + 4
+        else:
+            # Original regex for S-B-C format (e.g., S2-B16-C1)
+            logger.debug("Detected S-B-C cell naming format")
+            data[['S', 'B', 'C']] = data['CellID'].str.extract(r'S(\d+)-[BN](\d+)-C(\d+)')
+            data[['S', 'B', 'C']] = data[['S', 'B', 'C']].astype(int)
+            data = data.sort_values(by=['B', 'S', 'C'])
+            data['cellidnumber'] = data.groupby(['B', 'S', 'C']).ngroup().add(1)
+            data = data.drop(['S', 'B', 'C'], axis=1)
         return data
 
 
@@ -237,6 +411,13 @@ class ESrapp():
 
 if __name__ == "__main__":
 
+    logger.info("="*70)
+    logger.info(" ENERGY SAVING rAPP STARTING")
+    logger.info(f" Version: {RAPP_VERSION}")
+    logger.info(f"  {BUILD_INFO}")
+    logger.info(f" CSV File: {CSV_FILE_PATH}")
+    logger.info("="*70)
+
     def str2bool(v):
         if isinstance(v, bool):
             return v
@@ -251,9 +432,16 @@ if __name__ == "__main__":
     parser.add_argument("--generate_db_data", type=str2bool, default=True, help="Set to True to generate data in db.")
     parser.add_argument("--use_sme_db", type=str2bool, default=False, help="Set to True use SME url for DB.")
     parser.add_argument("--random_predictions", type=str2bool, default=False, help="Set to True to generate random predictions.")
+    parser.add_argument("--load_csv_data", type=str2bool, default=CSV_LOAD_ON_STARTUP, help="Set to True to load CSV data on startup.")
     args = parser.parse_args()
 
-    rapp = ESrapp(generate_db_data=args.generate_db_data, use_sme_db=args.use_sme_db, random_predictions=args.random_predictions)
-    logger.debug("ES xApp starting")
+    rapp = ESrapp(
+        generate_db_data=args.generate_db_data, 
+        use_sme_db=args.use_sme_db, 
+        random_predictions=args.random_predictions,
+        load_csv_data=args.load_csv_data
+    )
+    logger.info("TRACE: ESrapp instance created successfully")
+    logger.debug("ES rApp starting")
 
     rapp.entry()

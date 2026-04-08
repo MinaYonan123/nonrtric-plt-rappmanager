@@ -4,3 +4,4 @@ requests
 influxdb
 pandas
 schedule
+ncclient
