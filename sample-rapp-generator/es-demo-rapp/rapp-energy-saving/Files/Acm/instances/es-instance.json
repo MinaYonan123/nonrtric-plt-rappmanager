@@ -22,11 +22,17 @@
           "podName": "energy-saving-rapp",
           "repository": {
             "repoName": "local",
-            "address": "UPDATE_THIS_ADDRESS"
+            "address": "http://172.19.1.86:18080"
           },
           "overrideParams": {
             "environment.appId": "DO_NOT_CHANGE_THIS_RAPP_INSTANCE_ID",
-            "environment.smeDiscoveryEndpoint": "DO_NOT_CHANGE_THIS_SME_DISCOVERY_ENDPOINT"
+            "environment.smeDiscoveryEndpoint": "DO_NOT_CHANGE_THIS_SME_DISCOVERY_ENDPOINT",
+            "environment.csvLoadOnStartup": "true",
+            "environment.csvTargetStartDate": "",
+            "appStartup.args[0]": "python3.10 main.py --generate_db_data=False --use_sme_db=True --random_predictions=False --load_csv_data=True",
+            "image.repository": "docker.io/ayakamal2000/es-rapp",
+            "image.tag": "vi5",
+            "image.pullPolicy": "Always"
           }
         }
       }
