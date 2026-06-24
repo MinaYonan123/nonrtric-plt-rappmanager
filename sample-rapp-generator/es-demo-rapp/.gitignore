@@ -1,0 +1,15 @@
+# Environment / secrets — never commit the real .env file
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
