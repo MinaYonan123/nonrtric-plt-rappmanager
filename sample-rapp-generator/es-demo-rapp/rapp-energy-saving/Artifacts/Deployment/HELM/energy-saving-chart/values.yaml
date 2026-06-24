@@ -22,10 +22,10 @@
 replicaCount: 1
 
 image:
-  repository: "nexus3.onap.org:10001/estdemoimages/es-rapp"
+  repository: "docker.io/ayakamal2000/es-rapp"
   pullPolicy: Always
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "0.2.16"
+  tag: "test_vr6"
 
 imagePullSecrets: []
 nameOverride: "energy-saving-rapp"
@@ -97,6 +97,9 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+hostNetwork: true
+
 environment:
   appId: "energy-saving"
   smeDiscoveryEndpoint: "http://sme-discovery.default.svc.cluster.local:8080/service-apis/v1/allServiceAPIs"
@@ -111,7 +114,7 @@ influxdb:
   org: "est"
   apiName: "influxdb2-http"
   resourceName: "root"
-  timeRange: "-5m"
+  timeRange: "2025-05-01T00:00:00Z"
   measurements:
     - "ManagedElement=o-du-pynts-1122,ManagedElement=o-du-pynts-1122,GNBDUFunction=1,NRCellDU=1"
     - "ManagedElement=o-du-pynts-1123,ManagedElement=o-du-pynts-1123,GNBDUFunction=1,NRCellDU=1"
@@ -119,11 +122,15 @@ influxdb:
 
 
 ncmp:
-  apiName: "cps-core-http"
+  #apiName: "cps-core-http"
+  apiName: "sdnc-oam-http"
   resourceName: "root"
   resourceId: "/_3gpp-common-managed-element:ManagedElement=ManagedElement-002/_3gpp-nr-nrm-gnbdufunction:GNBDUFunction=GNBDUFunction-001/_3gpp-nr-nrm-nrcelldu:NRCellDU=NRCellDU-001/attributes"
   managedElementId: "ManagedElement-002"
   gnbduFunctionId: "GNBDUFunction-001"
+  # SDNC/NCMP authentication credentials
+  username: "admin"
+  password: "Kp8bJ4SXszM0WXlhak3eHlcse2gAw84vaoGGmJvUy2U"
 
 kserve:
   apiName: "es-predictor-http"
@@ -136,5 +143,4 @@ teiv:
 
 appStartup:
   command: ["/bin/sh", "-c"]
-  args: [ "python main.py --generate_db_data=False --use_sme_db=True --random_predictions=False" ]
-
+  args: [ "python3.10 main.py --generate_db_data=False --use_sme_db=True --random_predictions=False --load_csv_data=True" ]

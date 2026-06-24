@@ -4,3 +4,5 @@ requests
 influxdb
 pandas
 schedule
+ncclient
+python-dotenv

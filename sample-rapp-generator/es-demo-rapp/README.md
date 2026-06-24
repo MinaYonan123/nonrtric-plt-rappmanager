@@ -1,10 +1,11 @@
 # Energy Saving rApp Demo
-The code, helm chart and rApp specification contained in this directory is used to deploy the Energy Saving rApp demo.
-The demo is designed to showcase the capabilities of the rApp platform in managing energy consumption in a network.
+
+The code, helm chart and rApp specification contained in this directory implement an Energy Saving rApp for the O-RAN SMO platform. The rApp monitors RAN cell load using PM data from InfluxDB, runs ML-based predictions via KServe, and applies energy saving control actions over the O1 interface (NETCONF) to power cells on or off based on predicted traffic load.
+
 The instructions below describe how to:
 
 - Deploy the demo in a Kubernetes cluster.
-- Create and deploy the Energy Saving rApp.
+- Create and deploy the Energy Saving rApp using the rApp Manager REST API (curl commands) and postman.
 - Confirm that the Energy Saving rApp is running and managing energy consumption in the network.
 - Undeploy the Energy Saving rApp.
 - Troubleshoot any issues that may arise during the deployment or undeployment process.
@@ -23,6 +24,15 @@ please follow the instructions [here](https://gerrit.o-ran-sc.org/r/gitweb?p=it/
 
 As an additional note, a special flavour of the SMO installation is available for the Energy Saving rApp demo.
 This flavour is located in the `smo-install/helm-override/ranpm-pynts-es-rapp` directory. 
+You also need to modify `onap-flavour-config.yaml`. Under `policy-clamp-ac-k8s-ppnt`, add the chart repository entry below to the repository list:
+
+```yaml
+- repoName: local
+   address: http://172.19.1.81:18080
+```
+
+The address above is only an example and must be updated to match your deployment environment.
+
 There is some detail on flavours [here](https://github.com/o-ran-sc/it-dep/blob/master/smo-install/README.md).
 This flavour is designed to install the SMO components required for the Energy Saving rapp demo.
 After all the other steps in the SMO installation guide are completed, you can run the following command to 
@@ -57,20 +67,55 @@ NOTE: The installation is just pointed at with the above commands. For the full 
    ```bash
    ./generate.sh rapp-energy-saving
    ```
-4. Make sure to expose the rappmanager service in the `nonrtric` namespace. This is done by running the following command:
+4. If you run the ES rApp with a local environment-specific configuration, add a `.env` file in the `src/` directory before deployment and rebuild the image. Example:
+   ```env
+   O1_SERVER_HOST=<add your machine ip>
+   O1_SERVER_PORT=8831
+   # Path to the CSV file to load into InfluxDB
+   # Default: /app/*.csv (set the CSV file name if you want to use your custom data)
+   CSV_FILE_PATH=/app/.csv
+
+   # nginx export URL for exporting InfluxDB data
+   NGINX_EXPORT_URL=<add your nginx deployment address if used>
+
+   # Optional: Output file path for exported JSON (default: output.json)
+   EXPORT_JSON_FILE=<the desired output json file name>
+   ```
+   After adding the `.env` file, rebuild the image and run a test container before deployment:
+   ```bash
+   docker build -t ayakamal2000/es-rapp:test_vr6 . -q && docker run --rm ayakamal2000/es-rapp:test_vr6 2>&1 | head -25
+   ```
+5. Create a namespace for KServe test workloads:
+   ```bash
+   kubectl create ns kserve-test
+   ```
+6. Make sure to expose the rappmanager service in the `nonrtric` namespace. This is done by running the following command:
    ```bash
    kubectl expose service rappmanager --type=NodePort --name=rappmanager-exposed -n nonrtric
    ```
-5. You will be using the postman collection provided in the main directory of this repository to create the rApp.
-6. Open Postman and import the `rapp-energy-saving.postman_collection.json` file.
-7. It is important to note the collection-level variables in the postman collection.
+7. Find the ClusterIP of the exposed service:
+   ```bash
+   kubectl get svc -A | grep rappmanager
+   ```
+   Example output:
+   ```
+   nonrtric   rappmanager            ClusterIP   10.98.19.4    <none>   8080/TCP           3h25m
+   nonrtric   rappmanager-exposed    NodePort    10.106.58.138 <none>   8080:32692/TCP     3h25m
+   ```
+   Use the ClusterIP of `rappmanager-exposed` (e.g. `10.106.58.138`) and port `8080` in all API calls below.
+   Replace `<RAPPMANAGER_IP>` with this IP throughout the curl commands.
+8. You will be using the postman collection provided in the main directory of this repository to create the rApp.
+9. Open Postman and import the `rapp-energy-saving.postman_collection.json` file.
+10. It is important to note the collection-level variables in the postman collection.
     1. REMOTE-IP: This is the location the rappmanager service is deployed/exposed to.
     2. PORT: This should be the port where the rappmanager is exposed.
     3. rappId: This is the ID of the rApp you will be creating. It should be unique and can be any alphanumeric string.
     4. rappInstanceId: It will be automatically populated when you create the rApp instance.
     5. PREIDCT_PORT: This is the port where the prediction service is running. It should be set to `40077` by default.
 
-### rApp Deployment
+---
+
+### rApp Deployment via Postman
 1. In Postman, select the `Onboard ES rApp` request from the collection. Send this request.
 2. Then run the `Get Rapps` request to confirm that the rApp has been onboarded successfully.
 3. Run the `Prime rApp` request to prime the rApp.
@@ -79,20 +124,128 @@ NOTE: The installation is just pointed at with the above commands. For the full 
 6. Run the `Get Rapp Instance` request to confirm that the rApp instance has been created successfully.
 7. Run the `Deploy Rapp Instance` to trigger installation of the rApp instance.
 8. The above deployment can take time, so you can run the `Get Rapp Instance` request to check the status of the rApp instance.
-9. You can also monitor the kubernetes pods in the `nonrtric` namespace to see if the rApp instance helm charts are being deployed.
+9. You can also monitor the kubernetes pods in the `smo` namespace to see if the rApp instance helm charts are being deployed.
+
+---
+
+### rApp Deployment via curl
+
+> The rApp name `energy-saving-1` is chosen to describe what is being deployed. It must be consistent across all commands for a given lifecycle.
+>
+> The `.csar` path below must match the location of the file generated in step 3.
+
+### End-to-End Loop Test with O1 Server and ns-3
+
+Use the following steps to test the end-to-end loop for the Energy Saving rApp with the O1 server and ns-3, so that the energy saving actions are applied during the scenario.
+
+1. Clone the RIC-TaaP repository:
+   ```bash
+   git clone https://github.com/Orange-OpenSource/ns-O-RAN-flexric
+   ```
+2. Navigate to the ns-3 workspace:
+   ```bash
+   cd ns-O-RAN-flexric/mmwave-LENA-oran/
+   ```
+3. Switch to the `O1_test` branch:
+   ```bash
+   git checkout -b O1_test
+   ```
+4. Start the O1 server:
+   ```bash
+   cd O1_sim/config_data
+   python3 O1_server.py
+   ```
+5. In another terminal, start the ns-3 scenario from `mmwave-LENA-oran/`:
+   ```bash
+   ./ns3 run 'scratch/Energy_saving_with_cell_utilization_scenario_O1.cc'
+   ```
+   Or, for the Lena5G scenario, run:
+   ```bash
+   ./ns3 run 'scratch/opl_nr_mimo_demo.cc'
+   ```
+6. After the O1 server and ns-3 scenario are running, deploy the Energy Saving rApp using the deployment steps described above.
+
+Important sequence:
+- Start the O1 server first.
+- Start the ns-3 scenario next.
+- Deploy the rApp only after both the O1 server and ns-3 are running.
+#### 1. Onboard the rApp package
+
+```bash
+curl -X POST http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1 \
+  -F "file=@/home/oie/nonrtric-plt-rappmanager/sample-rapp-generator/rapp-energy-saving.csar"
+```
+
+#### 2. Prime the rApp
+
+```bash
+curl -X PUT http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1 \
+  -H "Content-Type: application/json" \
+  -d '{"primeOrder": "PRIME"}'
+```
+
+#### 3. Check the rApp status
+
+```bash
+curl -X GET http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1
+```
+
+Wait until the status shows `PRIMED` before proceeding.
+
+#### 4. Create an rApp instance
+
+```bash
+curl -X POST http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1/instance \
+  -H "Content-Type: application/json" \
+  -d '{
+    "acm": {
+      "instance": "es-instance"
+    },
+    "sme": {
+      "providerFunction": "es-model-provider-function",
+      "serviceApis": "api-set-kserve-predictor",
+      "invokers": "invoker-app1"
+    }
+  }'
+```
+
+Note the `rappInstanceId` returned in the response (e.g. `6cf1718e-2b7d-42b9-b606-80854adc9e25`). Use it in the commands below as `<INSTANCE_ID>`.
+
+#### 5. Deploy the rApp instance
+
+```bash
+curl -X PUT http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1/instance/<INSTANCE_ID> \
+  -H "Content-Type: application/json" \
+  -d '{"deployOrder": "DEPLOY"}'
+```
+
+#### 6. Check the rApp instance status
+
+```bash
+curl -X GET http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1/instance/<INSTANCE_ID>
+```
+
+You can also monitor Kubernetes pods in the `smo` namespace:
+```bash
+kubectl get pods -n smo | grep energy-saving
+```
 
 ### Confirmation
 1. To confirm successful running of the demo energy saving rApp, we can look at the kubernetes logs of the pod.
    ```bash
-   kubectl logs -f app.kubernetes.io/name=energy-saving-rapp -n nonrtric
+   kubectl logs -f -l app.kubernetes.io/name=energy-saving-rapp -n smo
    ```
 2. You should see logs indicating that the rApp is running and managing energy consumption in the network.
 3. For example, you should see:
-    1. logs of cells being turned off and on based on the energy consumption in the network.
-    2. Predictions of energy consumption based on the current network load being returned to make poweer management decisions.
+    1. Logs of cells being turned off and on based on the energy consumption in the network.
+    2. Predictions of energy consumption based on the current network load being returned to make power management decisions.
+    3. NETCONF responses from the O1 server confirming cell state changes.
 
 ## Undeployment
-Undeployment of the rApp can also be done with the Postman collection.
+
+Undeployment is done in reverse order: undeploy the instance, delete the instance, deprime the rApp, then delete the rApp package.
+
+### Undeploy via Postman
 1. Run the `Undeploy Rapp Instance` request to undeploy the rApp instance. This takes some time.
 2. Run the `Get Rapp Instance` request to confirm that the rApp instance has been undeployed successfully.
 3. Run the `Delete Rapp Instance` request to delete the rApp instance.
@@ -100,6 +253,53 @@ Undeployment of the rApp can also be done with the Postman collection.
 5. Run the `Deprime rApp` request to deprime the rApp.
 6. Run the `Delete ES Rapp` request to delete the rApp.
 7. This should conclude the undeployment of the Energy Saving rApp.
+
+### Undeploy via curl
+
+#### 1. Undeploy the rApp instance
+
+```bash
+curl -X PUT http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1/instance/<INSTANCE_ID> \
+  -H "Content-Type: application/json" \
+  -d '{"deployOrder": "UNDEPLOY"}'
+```
+
+#### 2. Delete the rApp instance
+
+```bash
+curl -X DELETE http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1/instance/<INSTANCE_ID>
+```
+
+#### 3. Deprime the rApp
+
+```bash
+curl -X PUT http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1 \
+  -H "Content-Type: application/json" \
+  -d '{"primeOrder": "DEPRIME"}'
+```
+
+#### 4. Delete the rApp package
+
+```bash
+curl -X DELETE http://<RAPPMANAGER_IP>:8080/rapps/energy-saving-1
+```
+
+---
+
+
+### rApp Package Structure (`rapp-energy-saving/`)
+
+| Path | Description |
+|---|---|
+| `Artifacts/Deployment/HELM/energy-saving-chart/` | Helm chart that deploys the rApp container |
+| `Definitions/asd.yaml` | ASD (Application Service Descriptor) referencing the Helm chart |
+| `Files/Acm/definition/compositions.json` | ACM composition definition (automation policy types) |
+| `Files/Acm/instances/es-instance.json` | ACM instance configuration used when creating the rApp instance |
+| `Files/Sme/providers/` | SME provider function registrations (KServe predictor, InfluxDB) |
+| `Files/Sme/invokers/` | SME invoker registrations (NCMP, InfluxDB, KServe, TEIV) |
+| `Files/Sme/serviceapis/` | SME service API definitions |
+
+---
 
 ## Troubleshooting
 If you encounter any issues during the deployment or undeployment of the rApp, please check the following:
