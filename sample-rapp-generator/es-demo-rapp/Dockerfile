@@ -19,10 +19,29 @@ FROM python:3.10.17-alpine3.21
 
 WORKDIR /app
 
-COPY src/ /app
+# Install curl and jq for fetching predictions
+RUN apk add --no-cache curl jq grep
 
+# Copy all source files to /app
+COPY src/ /app/
+
+# Copy any CSV files from root to /app
+COPY *.csv /app/
+
+# Ensure predictions are baked into the image so the entrypoint can find them
+RUN mkdir -p /app/data
+
+# Install Python dependencies
 RUN pip install -r requirements.txt
 
-COPY src/ /app
+# Try to fetch fresh predictions during build (non-fatal fallback to baked-in files)
+COPY fetch_predictions.sh /fetch_predictions.sh
+RUN chmod +x /fetch_predictions.sh && /fetch_predictions.sh || echo "Using fallback predictions during build"
 
-CMD ["python", "main.py", "--generate_db_data=True", "--use_sme_db=True", "--random_predictions=False" ]
+# Copy entrypoint script (simple startup, no fetching)
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["python", "main.py", "--generate_db_data=True", "--use_sme_db=True", "--random_predictions=False"]
+
+ENTRYPOINT ["/entrypoint.sh"]
