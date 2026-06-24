@@ -60,6 +60,8 @@ class SMEClient:
     def parse_uri(self, response):
         try:
             logger.debug("Parsing SME response to extract URI.")
+            logger.debug(f"Full SME response: {json.dumps(response, indent=2)}")
+            
             service = response["serviceAPIDescriptions"][0]
             profile = service["aefProfiles"][0]
             version = profile["versions"][0]
@@ -73,7 +75,11 @@ class SMEClient:
             ipv4_addr = interface.get("ipv4Addr")
             port = interface.get("port")
 
-            return f"http://{ipv4_addr}:{port}{uri}" if uri else f"http://{ipv4_addr}:{port}"
+            full_uri = f"http://{ipv4_addr}:{port}{uri}" if uri else f"http://{ipv4_addr}:{port}"
+            logger.info(f"Parsed URI successfully: {full_uri}")
+            return full_uri
         except (KeyError, IndexError, TypeError) as e:
             logger.error(f"Error parsing URI: {e}")
+            logger.error(f"Response structure issue. Check if serviceAPIDescriptions exists and has expected fields.")
+            logger.error(f"Full response for debugging: {json.dumps(response, indent=2) if response else 'No response'}")
             return None
