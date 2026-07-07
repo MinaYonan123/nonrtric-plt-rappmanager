@@ -241,7 +241,6 @@ class DATABASE(object):
         write_api.close()
         logger.info("Synthetic data successfully written to InfluxDB.")
 
-    def config(self):
 
 
     def load_csv_to_influxdb(self, csv_file_path, measurement_name="o-ran-pm", cell_id_column="CELLULE", timestamp_column="MINIMALE(PSDATE)", delimiter=';', date_format='%d/%m/%Y %H:%M:%S'):
