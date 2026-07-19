@@ -11,16 +11,47 @@ The instructions below describe how to:
 - Troubleshoot any issues that may arise during the deployment or undeployment process.
 
 ## Prerequisites
-- A Kubernetes cluster, various versions and sims supported - see [here](https://gerrit.o-ran-sc.org/r/gitweb?p=it/dep.git;a=blob_plain;f=smo-install/README.md;hb=HEAD).
-- See prerequisites [here](https://gerrit.o-ran-sc.org/r/gitweb?p=it/dep.git;a=blob_plain;f=smo-install/README.md;hb=HEAD)
 - A clone of this repository.
 - Postman.
+- A Kubernetes cluster (Kubernetes 1.30+)
+- **SMO Prerequisites:**
+  - VM: 64GB Memory, 20VCPU, 100GB disk
+  - Helm 3.12.0+ (< 4.0.0)
+  - Helm deploy/undeploy plugin
+  - Helm cm-push plugin
+  - yq
+  - jq
 
 ## Deployment Steps
 
 ### SMO Installation
-For a complete guide on the installation of the SMO rApp platform,
-please follow the instructions [here](https://gerrit.o-ran-sc.org/r/gitweb?p=it/dep.git;a=blob_plain;f=smo-install/README.md;hb=HEAD).
+
+#### Dev Mode Installation
+Builds charts from source.
+
+**Steps:**
+
+1. Clone the repository:
+   ```bash
+   git clone --recursive "https://gerrit.o-ran-sc.org/r/it/dep"
+   ```
+
+2. Prepare the Kubernetes cluster using the helper script:
+   ```bash
+   ./dep/tools/setup_k8s/scripts/setup_k8s.sh
+   ```
+   This script can be used to setup the Kubernetes cluster using kubeadm.
+
+3. Setup chartmuseum and Helm:
+   ```bash
+   ./dep/smo-install/scripts/layer-0/0-setup-charts-museum.sh
+   ./dep/smo-install/scripts/layer-0/0-setup-helm3.sh
+   ```
+
+4. Build charts:
+   ```bash
+   ./dep/smo-install/scripts/layer-1/1-build-all-charts.sh
+   ```
 
 As an additional note, a special flavour of the SMO installation is available for the Energy Saving rApp demo.
 This flavour is located in the `smo-install/helm-override/ranpm-pynts-es-rapp` directory. 
@@ -60,14 +91,15 @@ NOTE: The installation is just pointed at with the above commands. For the full 
     Replace `IP_ADD` and `PORT` in the command below with the address and port of your chart repository.
    ```bash
    cd scripts/install
-   ./patch-sample-rapps.sh -i IP_ADD -p PORT -r "es-demo-rapp/rapp-energy-saving"
+   ./patch-sample-rapps.sh -i <IP_ADD> -p <PORT> -r "es-demo-rapp/rapp-energy-saving"
    ```
-2. Navigate to the `es-demo-rapp` directory.
+2. Navigate to the `sample-rapp-generator` directory in the `nonrtric-plt-rappmanager` repository.
 3. To generate the rApp csar and helm chart, run the following command:
    ```bash
-   ./generate.sh rapp-energy-saving
+   ./generate.sh es-demo-rapp/rapp-energy-saving
    ```
-4. If you run the ES rApp with a local environment-specific configuration, add a `.env` file in the `src/` directory before deployment and rebuild the image. Example:
+4. Note that the `src` directory for this demo is in `es-demo-rapp`.
+5. If you run the ES rApp with a local environment-specific configuration, add a `.env` file in the `es-demo-rapp/src/` directory before deployment and rebuild the image. Example:
    ```env
    O1_SERVER_HOST=<add your machine ip>
    O1_SERVER_PORT=8831
@@ -81,19 +113,20 @@ NOTE: The installation is just pointed at with the above commands. For the full 
    # Optional: Output file path for exported JSON (default: output.json)
    EXPORT_JSON_FILE=<the desired output json file name>
    ```
-   After adding the `.env` file, rebuild the image and run a test container before deployment:
+   After adding the `.env` file, navigate to the `es-demo-rapp` directory, rebuild the image, and run a test container before deployment:
    ```bash
+   cd es-demo-rapp
    docker build -t ayakamal2000/es-rapp:test_vr6 . -q && docker run --rm ayakamal2000/es-rapp:test_vr6 2>&1 | head -25
    ```
-5. Create a namespace for KServe test workloads:
+6. Create a namespace for KServe test workloads:
    ```bash
    kubectl create ns kserve-test
    ```
-6. Make sure to expose the rappmanager service in the `nonrtric` namespace. This is done by running the following command:
+7. Make sure to expose the rappmanager service in the `nonrtric` namespace. This is done by running the following command:
    ```bash
    kubectl expose service rappmanager --type=NodePort --name=rappmanager-exposed -n nonrtric
    ```
-7. Find the ClusterIP of the exposed service:
+8. Find the ClusterIP of the exposed service:
    ```bash
    kubectl get svc -A | grep rappmanager
    ```
